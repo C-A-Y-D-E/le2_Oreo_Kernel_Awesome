@@ -2297,7 +2297,7 @@ static void __init rcu_spawn_nocb_kthreads(struct rcu_state *rsp)
 	struct rcu_data *rdp;
 	struct task_struct *t;
 
-	if (rcu_nocb_mask == NULL)
+	if (!have_rcu_nocb_mask)
 		return;
 	for_each_cpu(cpu, rcu_nocb_mask) {
 		rdp = per_cpu_ptr(rsp->rda, cpu);
@@ -2311,9 +2311,9 @@ static void __init rcu_spawn_nocb_kthreads(struct rcu_state *rsp)
 /* Prevent __call_rcu() from enqueuing callbacks on no-CBs CPUs */
 static bool init_nocb_callback_list(struct rcu_data *rdp)
 {
-	if (rcu_nocb_mask == NULL ||
-	    !cpumask_test_cpu(rdp->cpu, rcu_nocb_mask))
+	if (!rcu_is_nocb_cpu(rdp->cpu))
 		return false;
+
 	rdp->nxttail[RCU_NEXT_TAIL] = NULL;
 	return true;
 }

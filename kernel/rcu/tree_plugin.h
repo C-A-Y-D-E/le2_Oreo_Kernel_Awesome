@@ -2253,6 +2253,145 @@ static void rcu_nocb_wait_gp(struct rcu_data *rdp)
 }
 
 /*
+
+ * Leaders come here to wait for additional callbacks to show up.
+ * This function does not return until callbacks appear.
+ */
+static void nocb_leader_wait(struct rcu_data *my_rdp)
+{
+	bool firsttime = true;
+	bool gotcbs;
+	struct rcu_data *rdp;
+	struct rcu_head **tail;
+
+wait_again:
+
+	/* Wait for callbacks to appear. */
+	if (!rcu_nocb_poll) {
+		trace_rcu_nocb_wake(my_rdp->rsp->name, my_rdp->cpu, "Sleep");
+		wait_event_interruptible(my_rdp->nocb_wq,
+				!ACCESS_ONCE(my_rdp->nocb_leader_sleep));
+		/* Memory barrier handled by smp_mb() calls below and repoll. */
+	} else if (firsttime) {
+		firsttime = false; /* Don't drown trace log with "Poll"! */
+		trace_rcu_nocb_wake(my_rdp->rsp->name, my_rdp->cpu, "Poll");
+	}
+
+	/*
+	 * Each pass through the following loop checks a follower for CBs.
+	 * We are our own first follower.  Any CBs found are moved to
+	 * nocb_gp_head, where they await a grace period.
+	 */
+	gotcbs = false;
+	for (rdp = my_rdp; rdp; rdp = rdp->nocb_next_follower) {
+		rdp->nocb_gp_head = ACCESS_ONCE(rdp->nocb_head);
+		if (!rdp->nocb_gp_head)
+			continue;  /* No CBs here, try next follower. */
+
+		/* Move callbacks to wait-for-GP list, which is empty. */
+		ACCESS_ONCE(rdp->nocb_head) = NULL;
+		rdp->nocb_gp_tail = xchg(&rdp->nocb_tail, &rdp->nocb_head);
+		rdp->nocb_gp_count = atomic_long_xchg(&rdp->nocb_q_count, 0);
+		rdp->nocb_gp_count_lazy =
+			atomic_long_xchg(&rdp->nocb_q_count_lazy, 0);
+		gotcbs = true;
+	}
+
+	/*
+	 * If there were no callbacks, sleep a bit, rescan after a
+	 * memory barrier, and go retry.
+	 */
+	if (unlikely(!gotcbs)) {
+		if (!rcu_nocb_poll)
+			trace_rcu_nocb_wake(my_rdp->rsp->name, my_rdp->cpu,
+					    "WokeEmpty");
+		flush_signals(current);
+		schedule_timeout_interruptible(1);
+
+		/* Rescan in case we were a victim of memory ordering. */
+		my_rdp->nocb_leader_sleep = true;
+		smp_mb();  /* Ensure _sleep true before scan. */
+		for (rdp = my_rdp; rdp; rdp = rdp->nocb_next_follower)
+			if (ACCESS_ONCE(rdp->nocb_head)) {
+				/* Found CB, so short-circuit next wait. */
+				my_rdp->nocb_leader_sleep = false;
+				break;
+			}
+		goto wait_again;
+	}
+
+	/* Wait for one grace period. */
+	rcu_nocb_wait_gp(my_rdp);
+
+	/*
+	 * We left ->nocb_leader_sleep unset to reduce cache thrashing.
+	 * We set it now, but recheck for new callbacks while
+	 * traversing our follower list.
+	 */
+	my_rdp->nocb_leader_sleep = true;
+	smp_mb(); /* Ensure _sleep true before scan of ->nocb_head. */
+
+	/* Each pass through the following loop wakes a follower, if needed. */
+	for (rdp = my_rdp; rdp; rdp = rdp->nocb_next_follower) {
+		if (ACCESS_ONCE(rdp->nocb_head))
+			my_rdp->nocb_leader_sleep = false;/* No need to sleep.*/
+		if (!rdp->nocb_gp_head)
+			continue; /* No CBs, so no need to wake follower. */
+
+		/* Append callbacks to follower's "done" list. */
+		tail = xchg(&rdp->nocb_follower_tail, rdp->nocb_gp_tail);
+		*tail = rdp->nocb_gp_head;
+		atomic_long_add(rdp->nocb_gp_count, &rdp->nocb_follower_count);
+		atomic_long_add(rdp->nocb_gp_count_lazy,
+				&rdp->nocb_follower_count_lazy);
+		smp_mb__after_atomic(); /* Store *tail before wakeup. */
+		if (rdp != my_rdp && tail == &rdp->nocb_follower_head) {
+			/*
+			 * List was empty, wake up the follower.
+			 * Memory barriers supplied by atomic_long_add().
+			 */
+			wake_up(&rdp->nocb_wq);
+		}
+	}
+
+	/* If we (the leader) don't have CBs, go wait some more. */
+	if (!my_rdp->nocb_follower_head)
+		goto wait_again;
+}
+
+/*
+ * Followers come here to wait for additional callbacks to show up.
+ * This function does not return until callbacks appear.
+ */
+static void nocb_follower_wait(struct rcu_data *rdp)
+{
+	bool firsttime = true;
+
+	for (;;) {
+		if (!rcu_nocb_poll) {
+			trace_rcu_nocb_wake(rdp->rsp->name, rdp->cpu,
+					    "FollowerSleep");
+			wait_event_interruptible(rdp->nocb_wq,
+						 ACCESS_ONCE(rdp->nocb_follower_head));
+		} else if (firsttime) {
+			/* Don't drown trace log with "Poll"! */
+			firsttime = false;
+			trace_rcu_nocb_wake(rdp->rsp->name, rdp->cpu, "Poll");
+		}
+		if (smp_load_acquire(&rdp->nocb_follower_head)) {
+			/* ^^^ Ensure CB invocation follows _head test. */
+			return;
+		}
+		if (!rcu_nocb_poll)
+			trace_rcu_nocb_wake(rdp->rsp->name, rdp->cpu,
+					    "WokeEmpty");
+		flush_signals(current);
+		schedule_timeout_interruptible(1);
+	}
+}
+
+/*
+
  * Per-rcu_data kthread, but only for no-CBs CPUs.  Each kthread invokes
  * callbacks queued by the corresponding no-CBs CPU.
  */

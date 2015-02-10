@@ -186,6 +186,7 @@ struct bcl_context {
 	struct workqueue_struct *bcl_hotplug_wq;
 	struct device_clnt_data *hotplug_handle;
 	struct device_clnt_data *cpufreq_handle[NR_CPUS];
+
 };
 
 enum bcl_threshold_state {
@@ -429,6 +430,10 @@ static void bcl_iavail_work(struct work_struct *work)
 
 static void bcl_ibat_notify(enum bcl_threshold_state thresh_type)
 {
+
+	if (bcl_hotplug_enabled)
+		queue_work(gbcl->bcl_hotplug_wq, &bcl_hotplug_work);
+
 	bcl_ibat_state = thresh_type;
 	if (bcl_hotplug_enabled)
 		queue_work(gbcl->bcl_hotplug_wq, &bcl_hotplug_work);
@@ -437,6 +442,9 @@ static void bcl_ibat_notify(enum bcl_threshold_state thresh_type)
 
 static void bcl_vph_notify(enum bcl_threshold_state thresh_type)
 {
+
+	if (bcl_hotplug_enabled)
+		queue_work(gbcl->bcl_hotplug_wq, &bcl_hotplug_work);
 	bcl_vph_state = thresh_type;
 	if (bcl_hotplug_enabled)
 		queue_work(gbcl->bcl_hotplug_wq, &bcl_hotplug_work);
@@ -1735,6 +1743,7 @@ static int bcl_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
+
 	/* Initialize mitigation KTM interface */
 	if (num_possible_cpus() > 1) {
 		bcl->hotplug_handle = devmgr_register_mitigation_client(
@@ -1755,6 +1764,7 @@ static int bcl_probe(struct platform_device *pdev)
 			return ret;
 		}
 	}
+
 
 	gbcl = bcl;
 	platform_set_drvdata(pdev, bcl);

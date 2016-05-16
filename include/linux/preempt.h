@@ -10,6 +10,22 @@
 #include <linux/linkage.h>
 #include <linux/list.h>
 
+static __always_inline int preempt_count(void)
+{
+	return READ_ONCE(current_thread_info()->preempt_count);
+}
+
+static __always_inline volatile int *preempt_count_ptr(void)
+{
+	return &current_thread_info()->preempt_count;
+}
+
+static __always_inline void preempt_count_set(int pc)
+{
+	*preempt_count_ptr() = pc;
+}
+
+
 #if defined(CONFIG_DEBUG_PREEMPT) || defined(CONFIG_PREEMPT_TRACER)
   extern void add_preempt_count(int val);
   extern void sub_preempt_count(int val);

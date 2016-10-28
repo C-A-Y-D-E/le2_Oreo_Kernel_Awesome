@@ -97,6 +97,7 @@ struct kgsl_driver {
 		uint64_t mapped_max;
 	} stats;
 	unsigned int full_cache_threshold;
+
 	struct kthread_worker worker;
 	struct task_struct *worker_thread;
 };

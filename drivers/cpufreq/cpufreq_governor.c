@@ -288,6 +288,7 @@ int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 		dbs_data->cdata = cdata;
 		dbs_data->usage_count = 1;
 
+
 		if (cdata->governor == GOV_ELEMENTALX)
 			rc = cdata->init_ex(dbs_data, policy);
 		else
